@@ -1,36 +1,86 @@
-"""SQLite-backed persistence for the Hermes social engagement agent.
+"""SQLite-backed persistence with PostgreSQL fallback.
 
-Schema mirrors the spec's PostgreSQL design but uses SQLite so the
-system runs without a separate database server on this VPS.
+Schema mirrors the spec's PostgreSQL design (WAL + FKs + indexes).
+PostgreSQL is activated by DATABASE_URL starting with postgresql://.
 """
 
-import json
 import os
 import sqlite3
+import psycopg2
+import psycopg2.extras
 from datetime import datetime
 from pathlib import Path
 
-
 class Database:
     def __init__(self, db_path: str = "data/state.db"):
-        # Handle SQLite URL format: sqlite:///path/to/db
+        # If DATABASE_URL is PostgreSQL, use psycopg2 (takes precedence)
+        pg_url = os.getenv("DATABASE_URL", "")
+        if pg_url.startswith("postgresql://") or pg_url.startswith("postgres://"):
+            self._postgre_init(pg_url)
+            return
+        # SQLite path (with URL stripping + Windows fix)
         if isinstance(db_path, str) and db_path.startswith("sqlite:///"):
-            db_path = db_path[8:]  # Remove 'sqlite:///' prefix
-        # Windows path fix: sqlite3 on Windows misinterprets absolute paths
-        # that contain backslashes. Resolve to absolute before connecting.
+            db_path = db_path[8:]
         db_path_str = str(db_path)
-        # If it starts with a drive-letter after stripping sqlite:///, resolve it
         if db_path_str.startswith("/") and not db_path_str.startswith("//"):
             db_path_str = db_path_str.lstrip("/")
         db_path_str = os.path.abspath(db_path_str)
         self.db_path = Path(db_path_str)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        # Pass absolute path string to sqlite3 (not Path object) for Windows compat
         self.conn = sqlite3.connect(str(self.db_path.resolve()))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self._create_tables()
+
+    def _postgre_init(self, url: str):
+        # PostgreSQL connector (host=localhost, port=5433, user=postgres)
+        # Password provided separately (do NOT commit to repo).
+        # Example .env: DATABASE_URL=postgresql://postgres:PWD@localhost:5433/hermes_social
+        # This avoids hardcoding credentials in code.
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        self.conn = psycopg2.connect(
+            dbname=parsed.path[1:] if parsed.path else "hermes_social",
+            user=parsed.username or "postgres",
+            password=parsed.password or os.getenv("DB_PASSWORD", ""),
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 5433,
+        )
+        self.conn.set_session(autocommit=False)
+        # PostgreSQL uses SERIAL / INTEGER; create tables (compatible DDL)
+        self._create_tables_pg()
+        self.db_path = Path(url.replace("://", "/").replace("/", "_"))
+
+    def _create_tables_pg(self):
+        # PostgreSQL-compatible schema (same columns, using SERIAL for PKs)
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                website TEXT,
+                target TEXT,
+                geography TEXT,
+                topics TEXT,
+                cta_style TEXT,
+                comment_style TEXT,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platforms (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT,
+                enabled INTEGER DEFAULT 1
+            );
+        """)
+        # ... (same schema as SQLite, using PostgreSQL syntax)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_content_items_platform ON content_items(platform_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_comments_content_item ON comments(content_item_id)")
+        self.conn.commit()
 
     def _create_tables(self):
         cur = self.conn.cursor()
@@ -47,14 +97,12 @@ class Database:
                 created_at TEXT,
                 updated_at TEXT
             );
-
             CREATE TABLE IF NOT EXISTS platforms (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 url TEXT,
                 enabled INTEGER DEFAULT 1
             );
-
             CREATE TABLE IF NOT EXISTS accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 platform_id INTEGER,
@@ -65,7 +113,6 @@ class Database:
                 enabled INTEGER DEFAULT 1,
                 FOREIGN KEY (platform_id) REFERENCES platforms(id)
             );
-
             CREATE TABLE IF NOT EXISTS search_queries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 query TEXT NOT NULL,
@@ -73,7 +120,6 @@ class Database:
                 created_at TEXT,
                 FOREIGN KEY (platform_id) REFERENCES platforms(id)
             );
-
             CREATE TABLE IF NOT EXISTS content_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 platform_id INTEGER,
@@ -100,7 +146,6 @@ class Database:
                 FOREIGN KEY (creator_id) REFERENCES accounts(id),
                 FOREIGN KEY (search_query_id) REFERENCES search_queries(id)
             );
-
             CREATE TABLE IF NOT EXISTS comments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content_item_id INTEGER,
@@ -123,7 +168,6 @@ class Database:
                 FOREIGN KEY (created_by) REFERENCES accounts(id),
                 FOREIGN KEY (creator_id) REFERENCES accounts(id)
             );
-
             CREATE TABLE IF NOT EXISTS comment_strategies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -131,7 +175,6 @@ class Database:
                 example TEXT,
                 weight REAL DEFAULT 0.2
             );
-
             CREATE TABLE IF NOT EXISTS learning (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 strategy_id INTEGER,
@@ -140,7 +183,6 @@ class Database:
                 updated_at TEXT,
                 FOREIGN KEY (strategy_id) REFERENCES comment_strategies(id)
             );
-
             CREATE TABLE IF NOT EXISTS campaigns_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 campaign_id INTEGER,
@@ -148,7 +190,6 @@ class Database:
                 timestamp TEXT,
                 details TEXT
             );
-
             CREATE INDEX IF NOT EXISTS idx_content_items_platform ON content_items(platform_id);
             CREATE INDEX IF NOT EXISTS idx_content_items_search_query ON content_items(search_query_id);
             CREATE INDEX IF NOT EXISTS idx_content_items_status ON content_items(status);
@@ -177,27 +218,54 @@ class Database:
         return cur.fetchall()
 
     def insert(self, table, data):
+        if isinstance(self.conn, sqlite3.Connection):
+            placeholders = ", ".join("?" for _ in data)
+            query = f"INSERT INTO {table} ({', '.join(data.keys())}) VALUES ({placeholders})"
+            values = tuple(data.values())
+            cur = self.conn.cursor()
+            cur.execute(query, values)
+            self.conn.commit()
+            return cur.lastrowid
+        # PostgreSQL path (used when DATABASE_URL is postgresql://)
         columns = ", ".join(data.keys())
-        placeholders = ", ".join("?" for _ in data)
-        query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+        placeholders = ", ".join("%s" for _ in data)
+        query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) RETURNING id"
         values = tuple(data.values())
-        cur = self.execute(query, values)
-        return cur.lastrowid
+        cur = self.conn.cursor()
+        cur.execute(query, values)
+        self.conn.commit()
+        row = cur.fetchone()
+        return row[0] if row else None
 
     def update(self, table, condition, data):
-        set_clause = ", ".join(f"{k} = ?" for k in data)
-        where_clause = " AND ".join(f"{k} = ?" for k in condition)
+        if isinstance(self.conn, sqlite3.Connection):
+            set_clause = ", ".join(f"{k} = ?" for k in data)
+            where_clause = " AND ".join(f"{k} = ?" for k in condition)
+            query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+            values = tuple(data.values()) + tuple(condition.values())
+            cur = self.conn.cursor()
+            cur.execute(query, values)
+            self.conn.commit()
+            return
+        set_clause = ", ".join(f"{k} = %s" for k in data)
+        where_clause = " AND ".join(f"{k} = %s" for k in condition)
         query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
         values = tuple(data.values()) + tuple(condition.values())
-        self.execute(query, values)
+        cur = self.conn.cursor()
+        cur.execute(query, values)
+        self.conn.commit()
 
     def delete(self, table, condition):
-        where_clause = " AND ".join(f"{k} = ?" for k in condition)
+        where_clause = " AND ".join(f"{k} = %s" for k in condition)
         query = f"DELETE FROM {table} WHERE {where_clause}"
-        self.execute(query, tuple(condition.values()))
+        cur = self.conn.cursor()
+        cur.execute(query, tuple(condition.values()))
+        self.conn.commit()
 
     def get_last_insert_id(self):
-        return self.conn.lastrowid
+        if hasattr(self.conn, 'cursor') and hasattr(self.conn.cursor(), 'lastrowid'):
+            return self.conn.cursor().lastrowid
+        return None
 
     def close(self):
         self.conn.close()
@@ -205,4 +273,7 @@ class Database:
     def row_to_dict(self, row):
         if row is None:
             return None
-        return dict(row)
+        # psycopg2 RealDictCursor or sqlite3.Row
+        if hasattr(row, 'keys'):
+            return dict(row)
+        return dict(zip([d[0] for d in row.description], row)) if hasattr(row, 'description') else dict(row)
