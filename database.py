@@ -5,6 +5,7 @@ system runs without a separate database server on this VPS.
 """
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -15,9 +16,17 @@ class Database:
         # Handle SQLite URL format: sqlite:///path/to/db
         if isinstance(db_path, str) and db_path.startswith("sqlite:///"):
             db_path = db_path[8:]  # Remove 'sqlite:///' prefix
-        self.db_path = Path(db_path)
+        # Windows path fix: sqlite3 on Windows misinterprets absolute paths
+        # that contain backslashes. Resolve to absolute before connecting.
+        db_path_str = str(db_path)
+        # If it starts with a drive-letter after stripping sqlite:///, resolve it
+        if db_path_str.startswith("/") and not db_path_str.startswith("//"):
+            db_path_str = db_path_str.lstrip("/")
+        db_path_str = os.path.abspath(db_path_str)
+        self.db_path = Path(db_path_str)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
+        # Pass absolute path string to sqlite3 (not Path object) for Windows compat
+        self.conn = sqlite3.connect(str(self.db_path.resolve()))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
