@@ -55,7 +55,7 @@ class YouTubeAdapter(PlatformAdapter):
         
         return self.transcript_api_available or self.youtube is not None
 
-    def search(self, query: str, max_results: int = 20) -> List[ContentItem]:
+    async def search(self, query: str, max_results: int = 20) -> List[ContentItem]:
         """Search YouTube for content matching query."""
         if not self.youtube:
             logger.warning("YouTube Data API not available; skipping search")

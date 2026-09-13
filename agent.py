@@ -19,10 +19,23 @@ from config import Config
 from database import Database
 from platforms.base import PlatformAdapter, ContentItem, Comment
 from platforms.youtube_adapter import YouTubeAdapter
-from platforms.instagram_adapter import InstagramAdapter
-from platforms.x_adapter import XAdapter
-from platforms.reddit_adapter import RedditAdaper
-from platforms.linkedin_adapter import LinkedInAdapter
+
+try:
+    from platforms.instagram_adapter import InstagramAdapter
+except ImportError:
+    InstagramAdapter = None
+try:
+    from platforms.x_adapter import XAdapter
+except ImportError:
+    XAdapter = None
+try:
+    from platforms.reddit_adapter import RedditAdapter
+except ImportError:
+    RedditAdapter = None
+try:
+    from platforms.linkedin_adapter import LinkedInAdapter
+except ImportError:
+    LinkedInAdapter = None
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +68,8 @@ class HermesSocialAgent:
             "reddit": RedditAdapter,
             "linkedin": LinkedInAdapter,
         }
+        # Filter out None values for missing adapters
+        platform_classes = {k: v for k, v in platform_classes.items() if v is not None}
 
         for platform_name, adapter_class in platform_classes.items():
             if self.config.is_platform_enabled(platform_name):
@@ -960,13 +975,10 @@ class HermesSocialAgent:
         # For now, we'll need to re-fetch or cache; stub implementation
         # In a full implementation, we'd join content_items with analysis logs
         try:
-            # Get the content item from database
-            rows = self.db.select("""
-                SELECT ci.*, ca.* 
-                FROM content_items ci 
-                LEFT JOIN content_analysis ca ON ci.id = ca.content_item_id 
-                WHERE ci.id = ?
-            """, (content_id,))
+            # Get the content item from database (no broken JOIN to content_analysis)
+            rows = self.db.select(
+                "SELECT * FROM content_items WHERE id = ?", (content_id,)
+            )
             
             if rows:
                 row = self.db.row_to_dict(rows[0])
