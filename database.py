@@ -12,6 +12,9 @@ from pathlib import Path
 
 class Database:
     def __init__(self, db_path: str = "data/state.db"):
+        # Handle SQLite URL format: sqlite:///path/to/db
+        if isinstance(db_path, str) and db_path.startswith("sqlite:///"):
+            db_path = db_path[8:]  # Remove 'sqlite:///' prefix
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
