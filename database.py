@@ -35,20 +35,42 @@ class Database:
 
     def _postgre_init(self, url: str):
         # PostgreSQL connector (host=localhost, port=5433, user=postgres)
-        # Password provided separately (do NOT commit to repo).
-        # Example .env: DATABASE_URL=postgresql://postgres:PWD@localhost:5433/hermes_social
-        # This avoids hardcoding credentials in code.
+        # Password provided via DB_PASSWORD env var (never hardcoded).
+        # DATABASE_URL is used only for the connection string; the
+        # database itself is created if it does not already exist.
         import urllib.parse
         parsed = urllib.parse.urlparse(url)
+        dbname = parsed.path[1:] if parsed.path else "hermes_social"
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 5433
+        user = parsed.username or "postgres"
+        password = parsed.password or os.getenv("DB_PASSWORD", "")
+
+        # Connect to the default maintenance database first, create target
+        # database if missing, then (re)connect to it.
+        admin_conn = psycopg2.connect(
+            dbname="postgres",
+            user=user,
+            password=password,
+            host=host,
+            port=port,
+        )
+        admin_conn.set_session(autocommit=True)
+        admin_cur = admin_conn.cursor()
+        admin_cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+        if not admin_cur.fetchone():
+            admin_cur.execute("CREATE DATABASE %s", (dbname,))
+        admin_conn.close()
+
+        # Now connect to the target database
         self.conn = psycopg2.connect(
-            dbname=parsed.path[1:] if parsed.path else "hermes_social",
-            user=parsed.username or "postgres",
-            password=parsed.password or os.getenv("DB_PASSWORD", ""),
-            host=parsed.hostname or "localhost",
-            port=parsed.port or 5433,
+            dbname=dbname,
+            user=user,
+            password=password,
+            host=host,
+            port=port,
         )
         self.conn.set_session(autocommit=False)
-        # PostgreSQL uses SERIAL / INTEGER; create tables (compatible DDL)
         self._create_tables_pg()
         self.db_path = Path(url.replace("://", "/").replace("/", "_"))
 
