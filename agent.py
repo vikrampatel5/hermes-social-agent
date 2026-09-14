@@ -1046,25 +1046,33 @@ class HermesSocialAgent:
         self.logger.info("AGENT_STOPPED")
 
 
-# For direct execution
-if __name__ == "__main__":
-    import asyncio
-    import signal
-    import sys
+async def run_agent(agent: HermesSocialAgent) -> None:
+    """Run the agent until its stop flag is set."""
+    try:
+        await agent.start()
+    finally:
+        await agent.stop()
 
+
+def main() -> None:
+    """Run the continuous agent loop with graceful shutdown handling."""
     agent = HermesSocialAgent()
 
     def signal_handler(sig, frame):
         print("\nShutting down gracefully...")
-        asyncio.create_task(agent.stop())
-        sys.exit(0)
+        agent.running = False
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        agent.initialize()
-        agent.start()
+        asyncio.run(run_agent(agent))
     except KeyboardInterrupt:
         print("\nShutting down...")
-        asyncio.run(agent.stop())
+
+
+# For direct execution
+if __name__ == "__main__":
+    import signal
+
+    main()
