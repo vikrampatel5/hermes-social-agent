@@ -99,9 +99,104 @@ class Database:
                 enabled INTEGER DEFAULT 1
             );
         """)
-        # ... (same schema as SQLite, using PostgreSQL syntax)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id SERIAL PRIMARY KEY,
+                platform_id INTEGER,
+                platform_name TEXT,
+                username TEXT,
+                url TEXT,
+                followers INTEGER,
+                enabled INTEGER DEFAULT 1
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS search_queries (
+                id SERIAL PRIMARY KEY,
+                query TEXT NOT NULL,
+                platform_id INTEGER,
+                created_at TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS content_items (
+                id SERIAL PRIMARY KEY,
+                platform_id INTEGER,
+                platform_name TEXT,
+                url TEXT,
+                title TEXT,
+                description TEXT,
+                transcript TEXT,
+                published_date TEXT,
+                creator_id INTEGER,
+                keywords TEXT,
+                search_query_id INTEGER,
+                discovered_at TIMESTAMP,
+                status TEXT DEFAULT 'discovered',
+                relevance_score REAL DEFAULT 0,
+                stockscribe_fit_score REAL DEFAULT 0,
+                audience_fit_score REAL DEFAULT 0,
+                comment_value_score REAL DEFAULT 0,
+                spam_risk_score REAL DEFAULT 0,
+                conversion_potential_score REAL DEFAULT 0,
+                creator_quality_score REAL DEFAULT 0,
+                overall_score REAL DEFAULT 0
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS comments (
+                id SERIAL PRIMARY KEY,
+                content_item_id INTEGER,
+                comment_text TEXT,
+                strategy_id INTEGER,
+                created_at TIMESTAMP,
+                published INTEGER DEFAULT 0,
+                quality_score REAL DEFAULT 0,
+                spam_risk REAL DEFAULT 0,
+                conversion_rate REAL DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                signups INTEGER DEFAULT 0,
+                created_by INTEGER,
+                platform TEXT,
+                creator_id INTEGER,
+                tracking_url TEXT,
+                status TEXT DEFAULT 'generated'
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS comment_strategies (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                example TEXT,
+                weight REAL DEFAULT 0.2
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS learning (
+                id SERIAL PRIMARY KEY,
+                strategy_id INTEGER,
+                metric TEXT,
+                trend REAL,
+                updated_at TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS campaigns_log (
+                id SERIAL PRIMARY KEY,
+                campaign_id INTEGER,
+                action TEXT,
+                timestamp TIMESTAMP,
+                details TEXT
+            );
+        """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_content_items_platform ON content_items(platform_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_content_items_search_query ON content_items(search_query_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_content_items_status ON content_items(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_comments_content_item ON comments(content_item_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_comments_quality ON comments(quality_score)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_comments_spam_risk ON comments(spam_risk)")
         self.conn.commit()
 
     def _create_tables(self):
