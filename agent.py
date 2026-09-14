@@ -794,7 +794,8 @@ class HermesSocialAgent:
 
         total = 0.0
         for score_type, weight in weights.items():
-            raw_score = scores.get(score_type + "_score", 0.0)
+            # Keys in the scores dict are without _score suffix (e.g. "relevance")
+            raw_score = scores.get(score_type, 0.0)
             if score_type == "spam_risk":
                 # For spam risk, lower is better, so we invert
                 total += (100.0 - raw_score) * weight
